@@ -1,0 +1,52 @@
+name: interviewmate
+description: AI-Powered Mock Interview Platform
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Navigation
+  go_router: ^14.0.0
+
+  # Fonts
+  google_fonts: ^6.0.0
+
+  # HTTP — talks to FastAPI backend
+  http: ^1.2.0
+
+  # Local session storage (replaces Firebase Auth persistence)
+  shared_preferences: ^2.3.0
+
+  # File picking (resume upload)
+  file_picker: ^8.0.0
+
+  # Audio recording for interview answers
+  record: ^5.2.1
+  path_provider: ^2.1.5
+  cross_file: ^0.3.4+2
+  video_player: ^2.9.2
+  flutter_tts: ^4.2.3
+  audioplayers: ^6.1.0
+
+  # Icons
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+  # Add your fonts/assets here if needed
+  # fonts:
+  #   - family: Lexend
+  #     fonts:
+  #       - asset: assets/fonts/Lexend-Regular.ttf

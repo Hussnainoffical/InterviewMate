@@ -1,0 +1,41 @@
+# Secrets
+.env
+env
+*.env
+
+# Python/backend
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.cache/
+*.db
+*.sqlite
+*.sqlite3
+storage/
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+
+# Node/vendor generated dependencies
+node_modules/
+
+# IDE/system
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Runtime/test artifacts
+*.log
+*.png
+coverage/
+
+# Large local model folders are not committed.
+backend/models/
+backend/test_samples/

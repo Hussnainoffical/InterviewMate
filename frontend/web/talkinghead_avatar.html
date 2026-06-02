@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InterviewMate Talking Avatar</title>
+  <style>
+    html, body, #avatar {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      font-family: Arial, sans-serif;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at 50% 16%, rgba(255, 255, 255, 0.18), transparent 28%),
+        linear-gradient(180deg, rgba(2, 6, 23, 0.02), rgba(2, 6, 23, 0.48)),
+        url("./talkinghead/interview_room.jpg");
+      background-size: cover;
+      background-position: center;
+    }
+
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: rgba(2, 6, 23, 0.48);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    #status {
+      position: absolute;
+      right: 16px;
+      top: 16px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      color: white;
+      background: rgba(16, 185, 129, 0.88);
+      font: 700 13px Arial, sans-serif;
+      opacity: 0;
+      transform: translateY(-4px);
+      transition: opacity 160ms ease, transform 160ms ease;
+      pointer-events: none;
+    }
+
+    #status.listening {
+      background: rgba(14, 165, 233, 0.90);
+    }
+
+    #status.thinking {
+      background: rgba(99, 102, 241, 0.92);
+    }
+
+    #status.speaking {
+      background: rgba(16, 185, 129, 0.90);
+    }
+
+    #status.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    #presence {
+      position: absolute;
+      left: 18px;
+      bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: rgba(255, 255, 255, 0.92);
+      font: 700 12px Arial, sans-serif;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+      pointer-events: none;
+    }
+
+    #presence::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #22c55e;
+      box-shadow: 0 0 14px rgba(34, 197, 94, 0.85);
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./talkinghead/node_modules/three/build/three.module.js",
+        "three/addons/": "./talkinghead/node_modules/three/examples/jsm/",
+        "talkinghead": "./talkinghead/modules/talkinghead.mjs"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="avatar"></div>
+  <div id="loading">Loading interviewer...</div>
+  <div id="status">Speaking</div>
+  <div id="presence">AI Interviewer</div>
+
+  <script type="module">
+    import { TalkingHead } from "talkinghead";
+
+    const loading = document.getElementById("loading");
+    const status = document.getElementById("status");
+    const avatar = document.getElementById("avatar");
+    let head = null;
+    let ready = false;
+    let visemeTimers = [];
+    const visemeNames = [
+      "viseme_PP", "viseme_FF", "viseme_TH", "viseme_DD", "viseme_kk",
+      "viseme_CH", "viseme_SS", "viseme_nn", "viseme_RR", "viseme_aa",
+      "viseme_E", "viseme_I", "viseme_O", "viseme_U", "viseme_sil",
+      "jawOpen", "mouthOpen", "mouthFunnel", "mouthPucker"
+    ];
+
+    function showStatus(show) {
+      status.classList.toggle("visible", !!show);
+    }
+
+    function setStateLabel(state) {
+      status.classList.remove("listening", "thinking", "speaking");
+      if (state === "listening") {
+        status.textContent = "Listening";
+        status.classList.add("listening");
+        showStatus(true);
+      } else if (state === "thinking") {
+        status.textContent = "Thinking";
+        status.classList.add("thinking");
+        showStatus(true);
+      } else if (state === "speaking") {
+        status.textContent = "Speaking";
+        status.classList.add("speaking");
+        showStatus(true);
+      } else {
+        showStatus(false);
+      }
+    }
+
+    function wordsFromText(text) {
+      const words = String(text || "")
+        .replace(/[^\p{L}\p{N}'-]+/gu, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      let time = 0;
+      return {
+        words,
+        wtimes: words.map((word) => {
+          const current = time;
+          time += Math.max(260, Math.min(680, 90 + word.length * 54));
+          return current;
+        }),
+        wdurations: words.map((word) => Math.max(240, Math.min(620, 80 + word.length * 48))),
+      };
+    }
+
+    function clearMouth() {
+      visemeTimers.forEach((timer) => window.clearTimeout(timer));
+      visemeTimers = [];
+      window.clearTimeout(window.__speakingTimer);
+      if (!head) return;
+      visemeNames.forEach((name) => head.setFixedValue(name, null, 70));
+    }
+
+    function scheduleViseme(name, value, at, hold) {
+      visemeTimers.push(window.setTimeout(() => {
+        if (!head) return;
+        visemeNames.forEach((target) => head.setFixedValue(target, null, 35));
+        head.setFixedValue(name, value, 45);
+        if (name !== "viseme_PP" && name !== "viseme_FF") {
+          head.setFixedValue("jawOpen", Math.min(0.5, value * 0.55), 45);
+          head.setFixedValue("mouthOpen", Math.min(0.42, value * 0.45), 45);
+        }
+      }, Math.max(0, at)));
+
+      visemeTimers.push(window.setTimeout(() => {
+        if (!head) return;
+        head.setFixedValue(name, null, 65);
+        head.setFixedValue("jawOpen", null, 65);
+        head.setFixedValue("mouthOpen", null, 65);
+      }, Math.max(0, at + hold)));
+    }
+
+    function animateVisemesFromText(text) {
+      clearMouth();
+      const timing = wordsFromText(text);
+      let lastTime = 0;
+
+      timing.words.forEach((word, index) => {
+        const raw = head.lipsyncPreProcessText(word, "en");
+        const sequence = head.lipsyncWordsToVisemes(raw, "en");
+        const wordStart = timing.wtimes[index];
+        const wordDuration = timing.wdurations[index];
+
+        if (!sequence?.visemes?.length) {
+          scheduleViseme("jawOpen", 0.28, wordStart, Math.max(120, wordDuration * 0.55));
+          lastTime = Math.max(lastTime, wordStart + wordDuration);
+          return;
+        }
+
+        const sequenceEnd = sequence.times[sequence.times.length - 1] +
+          sequence.durations[sequence.durations.length - 1];
+        const scale = sequenceEnd > 0 ? wordDuration / sequenceEnd : 1;
+
+        sequence.visemes.forEach((viseme, visemeIndex) => {
+          if (viseme === "sil") return;
+          const name = `viseme_${viseme}`;
+          const at = wordStart + (sequence.times[visemeIndex] * scale);
+          const hold = Math.max(95, sequence.durations[visemeIndex] * scale);
+          const value = (viseme === "PP" || viseme === "FF") ? 0.95 : 0.72;
+          scheduleViseme(name, value, at, hold);
+          lastTime = Math.max(lastTime, at + hold);
+        });
+      });
+
+      window.__speakingTimer = window.setTimeout(() => {
+        clearMouth();
+        showStatus(false);
+      }, Math.max(1200, lastTime + 260));
+    }
+
+    async function init() {
+      head = new TalkingHead(avatar, {
+        lipsyncModules: ["en"],
+        lipsyncLang: "en",
+        cameraView: "head",
+        cameraDistance: -0.26,
+        cameraY: 0.045,
+        cameraRotateEnable: false,
+        cameraPanEnable: false,
+        cameraZoomEnable: false,
+        modelFPS: 30,
+        modelPixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
+        avatarIdleEyeContact: 0.55,
+        avatarIdleHeadMove: 0.08,
+        avatarSpeakingEyeContact: 0.92,
+        avatarSpeakingHeadMove: 0.10
+      });
+
+      try {
+        await head.showAvatar({
+          url: "./talkinghead/avatars/interviewer.glb",
+          body: "M",
+          avatarMood: "neutral",
+          lipsyncLang: "en",
+          avatarSpeakingEyeContact: 0.85,
+          avatarIdleHeadMove: 0.08,
+          avatarSpeakingHeadMove: 0.10,
+          baseline: {
+            headRotateX: -0.04,
+            eyeBlinkLeft: 0.1,
+            eyeBlinkRight: 0.1
+          }
+        }, (event) => {
+          if (event.lengthComputable) {
+            loading.textContent = `Loading interviewer ${Math.min(100, Math.round(event.loaded / event.total * 100))}%`;
+          }
+        });
+        ready = true;
+        loading.style.display = "none";
+        parent.postMessage({ source: "interviewmate-talkinghead", type: "ready" }, "*");
+      } catch (error) {
+        loading.textContent = `Avatar failed: ${error}`;
+        parent.postMessage({ source: "interviewmate-talkinghead", type: "error", error: String(error) }, "*");
+      }
+    }
+
+    async function speak(text) {
+      if (!ready || !head || !text) return;
+      try {
+        head.stopSpeaking?.();
+      } catch (_) {}
+      setStateLabel("speaking");
+      animateVisemesFromText(text);
+    }
+
+    function stop() {
+      try {
+        head?.stopSpeaking?.();
+      } catch (_) {}
+      clearMouth();
+      setStateLabel("idle");
+    }
+
+    function listen() {
+      clearMouth();
+      setStateLabel("listening");
+    }
+
+    function think() {
+      clearMouth();
+      setStateLabel("thinking");
+    }
+
+    window.addEventListener("message", (event) => {
+      const message = event.data || {};
+      if (message.source !== "interviewmate-flutter") return;
+      if (message.type === "speak") speak(message.text);
+      if (message.type === "stop") stop();
+      if (message.type === "listen") listen();
+      if (message.type === "think") think();
+      if (message.type === "idle") stop();
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (!head) return;
+      if (document.visibilityState === "visible") head.start();
+      else head.stop();
+    });
+
+    init();
+  </script>
+</body>
+</html>
