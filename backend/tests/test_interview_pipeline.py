@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+import inspect
 import os
 import tempfile
 from pathlib import Path
@@ -14,6 +15,12 @@ from app.db_models import Base
 from app.models import StartInterviewRequest
 from app.routers import github, interview, resume
 from app.services import evaluation, realtime, transcription
+
+
+async def maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 class FakeUpload:
@@ -68,11 +75,11 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def start_session(self, question_count=3):
         with patch.object(interview, "generate_interview_questions", side_effect=fake_questions):
-            return await interview.start_interview(
+            return await maybe_await(interview.start_interview(
                 StartInterviewRequest(skills=["FastAPI"], questionCount=question_count),
                 uid="user_001",
                 db=self.db,
-            )
+            ))
 
     async def submit_real_answer(self, session_id, question_id="q0"):
         with patch.object(
@@ -152,7 +159,7 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         session = await self.start_session()
 
         with self.assertRaises(HTTPException) as raised:
-            await interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db)
+            await maybe_await(interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db))
 
         self.assertEqual(400, raised.exception.status_code)
         stored = crud.get_session(self.db, session.sessionId)
@@ -162,10 +169,10 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         session = await self.start_session()
         for question in session.questions:
             await self.submit_real_answer(session.sessionId, question_id=question.questionId)
-        first = await interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db)
+        first = await maybe_await(interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db))
 
         with self.assertRaises(HTTPException) as duplicate:
-            await interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db)
+            await maybe_await(interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db))
 
         with self.assertRaises(HTTPException) as late_answer:
             await self.submit_real_answer(session.sessionId, question_id="q1")
@@ -238,7 +245,7 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_realtime_session_rejects_completed_session(self):
         session = await self.start_session(question_count=1)
         await self.submit_real_answer(session.sessionId, question_id="q0")
-        await interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db)
+        await maybe_await(interview.complete_interview({"sessionId": session.sessionId, "uid": "user_001"}, db=self.db))
 
         with self.assertRaises(HTTPException) as raised:
             await interview.create_realtime_session(
@@ -273,7 +280,7 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_transcript_answer_saves_live_realtime_answer(self):
         session = await self.start_session(question_count=1)
 
-        response = await interview.submit_transcript_answer(
+        response = await maybe_await(interview.submit_transcript_answer(
             {
                 "sessionId": session.sessionId,
                 "questionId": "q0",
@@ -282,7 +289,7 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "source": "realtime",
             },
             db=self.db,
-        )
+        ))
 
         stored = crud.get_session(self.db, session.sessionId)
         self.assertEqual("realtime", stored.answers["q0"]["transcriptionSource"])
@@ -292,7 +299,7 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         session = await self.start_session(question_count=1)
 
         with self.assertRaises(HTTPException) as raised:
-            await interview.submit_transcript_answer(
+            await maybe_await(interview.submit_transcript_answer(
                 {
                     "sessionId": session.sessionId,
                     "questionId": "q0",
@@ -301,7 +308,7 @@ class InterviewPipelineTests(unittest.IsolatedAsyncioTestCase):
                     "source": "realtime",
                 },
                 db=self.db,
-            )
+            ))
 
         self.assertEqual(422, raised.exception.status_code)
 

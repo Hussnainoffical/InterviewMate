@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'auth_service.dart';
 
 // ── Change this URL based on your setup ──────────────────────────────────────
 // Web / Desktop  →  http://localhost:8000
@@ -13,10 +14,17 @@ class ApiService {
   factory ApiService() => _i;
   ApiService._();
 
-  Map<String, String> get _h => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+  Map<String, String> get _h {
+    final headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    final token = AuthService().token;
+    if (token != null && token.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $token';
+    }
+    return headers;
+  }
 
   // ── Core ─────────────────────────────────────────────────────────────────
 
@@ -26,10 +34,11 @@ class ApiService {
     return _handle(res);
   }
 
-  Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body,
+      {Duration timeout = const Duration(seconds: 10)}) async {
     final res = await http.post(Uri.parse('$kBaseUrl$path'),
         headers: _h, body: jsonEncode(body))
-        .timeout(const Duration(seconds: 10));
+        .timeout(timeout);
     return _handle(res);
   }
 
@@ -91,8 +100,9 @@ class ApiService {
       List<int> fileBytes, String fileName, String uid) async {
     final uri = Uri.parse('$kBaseUrl/api/v1/resume/upload?uid=$uid');
     final req = http.MultipartRequest('POST', uri)
+      ..headers.addAll(_h..remove('Content-Type'))
       ..files.add(http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
-    final streamed = await req.send().timeout(const Duration(seconds: 30));
+    final streamed = await req.send().timeout(const Duration(seconds: 180));
     final res = await http.Response.fromStream(streamed);
     return _handle(res);
   }
@@ -125,7 +135,7 @@ class ApiService {
           'questionCount': questionCount,
           if (candidateProfile != null) 'candidateProfile': candidateProfile,
         }))
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 240));  // Qwen generation can take minutes on CPU
     return _handle(res);
   }
 
@@ -136,11 +146,12 @@ class ApiService {
   }) async {
     final uri = Uri.parse('$kBaseUrl/api/v1/interview/submit-answer');
     final req = http.MultipartRequest('POST', uri)
+      ..headers.addAll(_h..remove('Content-Type'))
       ..fields['sessionId']  = sessionId
       ..fields['questionId'] = questionId
       ..fields['uid']        = uid
       ..files.add(http.MultipartFile.fromBytes('audio', audioBytes, filename: audioFileName));
-    final streamed = await req.send().timeout(const Duration(seconds: 30));
+    final streamed = await req.send().timeout(const Duration(seconds: 180));
     final res = await http.Response.fromStream(streamed);
     return _handle(res);
   }
@@ -158,11 +169,12 @@ class ApiService {
         'uid': uid,
         'transcript': transcript,
         'source': source,
-      });
+      }, timeout: const Duration(seconds: 90));
 
   Future<Map<String, dynamic>> completeInterview(
       String sessionId, String uid) =>
-      _post('/api/v1/interview/complete', {'sessionId': sessionId, 'uid': uid});
+      _post('/api/v1/interview/complete', {'sessionId': sessionId, 'uid': uid},
+          timeout: const Duration(seconds: 180));
 
   Future<Map<String, dynamic>> getInterviewHistory(String uid) =>
       _get('/api/v1/interview/history?uid=$uid');

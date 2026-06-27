@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.database import get_db, SessionLocal
 from app.models import StartInterviewRequest, StartInterviewResponse, InterviewQuestion, SubmitAnswerResponse
 from app import crud
@@ -140,7 +141,7 @@ def _session_to_dict(s) -> dict:
 
 
 @router.post("/start", response_model=StartInterviewResponse)
-async def start_interview(body: StartInterviewRequest, uid: str = "",
+def start_interview(body: StartInterviewRequest, uid: str = "",
                           db: Session = Depends(get_db)):
     if not body.skills:
         raise HTTPException(status_code=400, detail="No skills provided")
@@ -195,7 +196,7 @@ async def submit_answer(
         raise HTTPException(status_code=400, detail="Question does not belong to this session")
 
     audio_bytes = await audio.read()
-    transcription = transcribe_audio(audio_bytes, audio.filename or "answer.wav")
+    transcription = await run_in_threadpool(transcribe_audio, audio_bytes, audio.filename or "answer.wav")
     transcript = transcription["transcript"]
     if transcription.get("transcriptionSource") != "whisper" or transcription.get("transcriptionError"):
         raise HTTPException(
@@ -208,7 +209,7 @@ async def submit_answer(
     if not valid_answer:
         raise HTTPException(status_code=422, detail=invalid_reason)
 
-    evaluation = evaluate_answer(question, transcript)
+    evaluation = await run_in_threadpool(evaluate_answer, question, transcript)
 
     answers = dict(session.answers or {})
     previous = answers.get(questionId) if isinstance(answers.get(questionId), dict) else {}
@@ -234,7 +235,7 @@ async def submit_answer(
 
 
 @router.post("/submit-transcript")
-async def submit_transcript_answer(payload: dict, db: Session = Depends(get_db)):
+def submit_transcript_answer(payload: dict, db: Session = Depends(get_db)):
     session_id = payload.get("sessionId")
     question_id = payload.get("questionId")
     uid = payload.get("uid", "")
@@ -336,7 +337,7 @@ async def create_realtime_session(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.post("/complete")
-async def complete_interview(payload: dict, db: Session = Depends(get_db)):
+def complete_interview(payload: dict, db: Session = Depends(get_db)):
     session_id = payload.get("sessionId")
     uid        = payload.get("uid", "")
 
@@ -402,10 +403,14 @@ async def complete_interview(payload: dict, db: Session = Depends(get_db)):
     })
 
     return {
-        "message":   "Interview completed successfully",
-        "sessionId": session_id,
-        "reportId":  report_id,
-        "score":     score,
+        "message":            "Interview completed successfully",
+        "sessionId":          session_id,
+        "reportId":           report_id,
+        "score":              score,
+        "interviewReadiness": summary.get("interviewReadiness"),
+        "topicGaps":          summary.get("topicGaps", []),
+        "communicationNotes": summary.get("communicationNotes", ""),
+        "evaluationSource":   summary.get("evaluationSource", "keyword"),
     }
 
 

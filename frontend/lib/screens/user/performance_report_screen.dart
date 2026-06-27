@@ -124,36 +124,124 @@ class _PRState extends State<PerformanceReportScreen> {
     final scores = latest is Map ? latest['questionScores'] as List? ?? [] : [];
     final strengths = latest is Map ? latest['strengths'] as List? ?? [] : [];
     final improvements = latest is Map ? latest['improvements'] as List? ?? [] : [];
+    final readiness = latest is Map ? latest['interviewReadiness']?.toString() : null;
+    final topicGaps = latest is Map ? latest['topicGaps'] as List? ?? [] : [];
+    final commNotes = latest is Map ? latest['communicationNotes']?.toString() : null;
 
     if (scores.isEmpty && strengths.isEmpty && improvements.isEmpty) {
       return const SizedBox.shrink();
     }
 
     return _glassCard(padding: 22, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Latest Evaluation', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: AppTheme.textDark)),
+      Row(children: [
+        const Text('Latest Evaluation', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: AppTheme.textDark)),
+        const Spacer(),
+        if (readiness != null && readiness.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: _readinessColor(readiness).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text(
+              _readinessLabel(readiness),
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: _readinessColor(readiness)),
+            ),
+          ),
+      ]),
       const SizedBox(height: 14),
       if (strengths.isNotEmpty)
-        Text('Strengths: ${strengths.join(', ')}', style: const TextStyle(fontSize: 13, color: AppTheme.textDark)),
+        _bulletList('Strengths', strengths, AppTheme.successGreen),
       if (improvements.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        _bulletList('Areas to Improve', improvements, const Color(0xFFF59E0B)),
+      ],
+      if (topicGaps.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        Text('Topic Gaps: ${topicGaps.join(', ')}', style: const TextStyle(fontSize: 12, color: AppTheme.errorRed)),
+      ],
+      if (commNotes != null && commNotes.isNotEmpty) ...[
         const SizedBox(height: 8),
-        Text('Improve: ${improvements.join(', ')}', style: const TextStyle(fontSize: 13, color: AppTheme.textGray)),
+        Text('Communication: $commNotes', style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: AppTheme.textGray)),
       ],
       if (scores.isNotEmpty) ...[
         const SizedBox(height: 14),
-        ...scores.take(5).map((item) {
-          final score = item is Map ? item['overallScore'] ?? item['relevanceScore'] ?? '-' : '-';
-          final feedback = item is Map ? item['feedback']?.toString() ?? '' : '';
-          final question = item is Map ? item['questionText']?.toString() ?? 'Question' : 'Question';
+        ...scores.asMap().entries.take(8).map((entry) {
+          final idx = entry.key;
+          final item = entry.value;
+          if (item is! Map) return const SizedBox.shrink();
+          final overall = (item['overallScore'] ?? 0) as num;
+          final relevance = (item['relevanceScore'] ?? 0) as num;
+          final completeness = (item['completenessScore'] ?? 0) as num;
+          final clarity = (item['clarityScore'] ?? 0) as num;
+          final correctness = item['correctnessScore'] as num?;
+          final feedback = item['feedback']?.toString() ?? '';
+          final question = item['questionText']?.toString() ?? 'Question';
+          final keyStrength = item['keyStrength']?.toString();
+          final keyImprove = item['keyImprovement']?.toString();
+          final evalSource = item['evaluationSource']?.toString();
+          final scoreColor = (overall >= 80) ? AppTheme.successGreen
+              : (overall >= 60) ? const Color(0xFFF59E0B) : AppTheme.errorRed;
           return Padding(
-            padding: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.only(bottom: 12),
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: Colors.white.withOpacity(0.6), borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(color: Colors.white.withOpacity(0.6), borderRadius: BorderRadius.circular(12)),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(question, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textDark)),
+                Row(children: [
+                  Container(
+                    width: 26, height: 26,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(color: scoreColor.withOpacity(0.1), shape: BoxShape.circle),
+                    child: Text('${idx + 1}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scoreColor)),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(question, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textDark))),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(color: scoreColor.withOpacity(0.12), borderRadius: BorderRadius.circular(12)),
+                    child: Text('${overall.round()}%', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: scoreColor)),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                // Score progress bars
+                _scoreBar('Relevance', relevance / 100, AppTheme.primaryCyan),
                 const SizedBox(height: 6),
-                Text('Score: $score%  $feedback', style: const TextStyle(fontSize: 12, color: AppTheme.textGray)),
+                _scoreBar('Completeness', completeness / 100, AppTheme.primaryPurple),
+                const SizedBox(height: 6),
+                _scoreBar('Clarity', clarity / 100, AppTheme.successGreen),
+                if (correctness != null) ...[
+                  const SizedBox(height: 6),
+                  _scoreBar('Technical Accuracy', correctness / 100, const Color(0xFFF59E0B)),
+                ],
+                const SizedBox(height: 8),
+                Text(feedback, style: const TextStyle(fontSize: 12, color: AppTheme.textGray)),
+                if (keyStrength != null && keyStrength.isNotEmpty) ...[
+                  const SizedBox(height: 5),
+                  Row(children: [
+                    Icon(Icons.check_circle_outline, size: 13, color: AppTheme.successGreen),
+                    const SizedBox(width: 4),
+                    Expanded(child: Text(keyStrength, style: const TextStyle(fontSize: 11, color: AppTheme.successGreen))),
+                  ]),
+                ],
+                if (keyImprove != null && keyImprove.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Row(children: [
+                    Icon(Icons.arrow_upward, size: 13, color: const Color(0xFFF59E0B)),
+                    const SizedBox(width: 4),
+                    Expanded(child: Text(keyImprove, style: const TextStyle(fontSize: 11, color: Color(0xFFF59E0B)))),
+                  ]),
+                ],
+                if (evalSource != null) ...[
+                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(evalSource == 'openai' ? 'AI Evaluated' : 'Keyword Match',
+                      style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+                  ),
+                ],
               ]),
             ),
           );
@@ -162,15 +250,68 @@ class _PRState extends State<PerformanceReportScreen> {
     ]));
   }
 
+  Widget _scoreBar(String label, double value, Color color) {
+    final clamped = value.clamp(0.0, 1.0);
+    return Row(children: [
+      SizedBox(width: 95, child: Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.textGray))),
+      Expanded(child: ClipRRect(
+        borderRadius: BorderRadius.circular(3),
+        child: LinearProgressIndicator(
+          value: clamped, minHeight: 6,
+          backgroundColor: Colors.grey.shade100,
+          valueColor: AlwaysStoppedAnimation(color),
+        ),
+      )),
+      const SizedBox(width: 8),
+      SizedBox(width: 32, child: Text('${(clamped * 100).round()}%', textAlign: TextAlign.right, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: color))),
+    ]);
+  }
+
+  Widget _bulletList(String title, List items, Color color) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: color)),
+      const SizedBox(height: 4),
+      ...items.map((item) => Padding(
+        padding: const EdgeInsets.only(left: 8, bottom: 3),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('• ', style: TextStyle(fontSize: 13, color: color)),
+          Expanded(child: Text(item.toString(), style: const TextStyle(fontSize: 12, color: AppTheme.textDark))),
+        ]),
+      )),
+    ]);
+  }
+
+  Color _readinessColor(String readiness) {
+    switch (readiness) {
+      case 'ready': return AppTheme.successGreen;
+      case 'almost_ready': return AppTheme.primaryCyan;
+      case 'needs_work': return const Color(0xFFF59E0B);
+      default: return AppTheme.errorRed;
+    }
+  }
+
+  String _readinessLabel(String readiness) {
+    switch (readiness) {
+      case 'ready': return 'Interview Ready';
+      case 'almost_ready': return 'Almost Ready';
+      case 'needs_work': return 'Needs Work';
+      case 'not_ready': return 'Not Ready';
+      default: return readiness;
+    }
+  }
+
   Widget _skillBreakdownCard() {
     final latest = _reports.isNotEmpty && _reports.first is Map ? _reports.first as Map : null;
     final scores = latest?['questionScores'] as List? ?? [];
+    final hasCorrectness = scores.any((s) => s is Map && s['correctnessScore'] != null);
     final metrics = scores.isEmpty
         ? <List<dynamic>>[]
         : [
             ['Relevance', _averageMetric(scores, 'relevanceScore') / 100, AppTheme.primaryCyan],
             ['Clarity', _averageMetric(scores, 'clarityScore') / 100, AppTheme.primaryPurple],
             ['Completeness', _averageMetric(scores, 'completenessScore') / 100, AppTheme.successGreen],
+            if (hasCorrectness)
+              ['Technical Accuracy', _averageMetric(scores, 'correctnessScore') / 100, const Color(0xFFF59E0B)],
           ];
 
     return _glassCard(padding: 22, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

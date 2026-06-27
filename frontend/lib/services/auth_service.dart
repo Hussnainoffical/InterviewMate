@@ -19,6 +19,7 @@ class AuthService {
   String? get role      => _session?['role'];
   String? get fullName  => _session?['fullName'];
   String? get email     => _session?['email'];
+  String? get token     => _session?['token'];
 
   // ── Load session from disk (call once at app start) ───────────────────
   Future<void> loadSession() async {

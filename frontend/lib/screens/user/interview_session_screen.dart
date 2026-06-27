@@ -75,6 +75,8 @@ class _ISState extends State<InterviewSessionScreen> {
   bool _speakingQuestion = false;
   bool _ttsAvailable = true;
   bool _questionChanging = false;
+  // Live realtime interviewer disabled for now (backend code kept intact).
+  static const bool _kLiveAgentEnabled = false;
   bool _realtimeConnecting = false;
   bool _realtimeActive = false;
   bool _candidateSpeaking = false;
@@ -84,7 +86,7 @@ class _ISState extends State<InterviewSessionScreen> {
   bool _agentQuestionAskedForCurrentQuestion = false;
   bool _autoAdvancing = false;
   bool _endingConfirmation = false;
-  String _realtimeStatus = 'Live agent idle';
+  String _realtimeStatus = '';
   String _liveUserTranscript = '';
   String _liveAssistantTranscript = '';
   html.RtcPeerConnection? _rtcPeer;
@@ -116,7 +118,7 @@ class _ISState extends State<InterviewSessionScreen> {
         setState(() => _speakingQuestion = false);
       }
     });
-    _loadUserSkills();
+    // _loadUserSkills();  // start empty: candidate uploads a CV each session
   }
 
   Future<void> _configureTts() async {
@@ -153,6 +155,7 @@ class _ISState extends State<InterviewSessionScreen> {
       ..style.width = '100%'
       ..style.height = '100%'
       ..style.display = 'block'
+      ..style.pointerEvents = 'none'  // avatar is display-only; never steal taps from dialogs/buttons
       ..allow = 'autoplay; fullscreen';
     _talkingHeadFrame = frame;
     ui_web.platformViewRegistry.registerViewFactory(
@@ -161,12 +164,69 @@ class _ISState extends State<InterviewSessionScreen> {
     );
   }
 
-  void _sendTalkingHeadMessage(String type, {String? text}) {
+  void _sendTalkingHeadMessage(String type, {String? text, int? durationMs, List<double>? envelope, int? frameMs}) {
     _talkingHeadFrame?.contentWindow?.postMessage({
       'source': 'interviewmate-flutter',
       'type': type,
       if (text != null) 'text': text,
+      if (durationMs != null) 'durationMs': durationMs,
+      if (envelope != null) 'envelope': envelope,
+      if (frameMs != null) 'frameMs': frameMs,
     }, html.window.location.origin);
+  }
+
+  // Mean-absolute amplitude envelope of a PCM WAV (one value per frameMs) so the
+  // avatar opens the mouth in time with the ACTUAL voice (word-level alignment).
+  List<double> _wavEnvelope(List<int> b, {int frameMs = 45}) {
+    try {
+      if (b.length < 44) return const [];
+      int le32(int o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+      final sampleRate = le32(24) == 0 ? 22050 : le32(24);
+      final ch = (b[22] | (b[23] << 8)) == 0 ? 1 : (b[22] | (b[23] << 8));
+      int pos = 12, dataStart = 44, dataSize = b.length - 44;
+      while (pos + 8 <= b.length) {
+        final id = String.fromCharCodes(b.sublist(pos, pos + 4));
+        final sz = le32(pos + 4);
+        if (id == 'data') { dataStart = pos + 8; dataSize = sz; break; }
+        pos += 8 + sz + (sz & 1);
+      }
+      final end = (dataStart + dataSize) > b.length ? b.length : (dataStart + dataSize);
+      final bytesPerFrame = (sampleRate * frameMs ~/ 1000) * ch * 2;
+      final env = <double>[];
+      int i = dataStart;
+      while (i + 2 <= end) {
+        final fe = (i + bytesPerFrame) > end ? end : (i + bytesPerFrame);
+        double sum = 0; int cnt = 0;
+        for (int j = i; j + 1 < fe; j += 2) {
+          int sm = b[j] | (b[j + 1] << 8);
+          if (sm >= 32768) sm -= 65536;
+          sum += sm.abs() / 32768.0; cnt++;
+        }
+        env.add(cnt > 0 ? sum / cnt : 0.0);
+        i = fe;
+      }
+      double mx = 0; for (final v in env) { if (v > mx) mx = v; }
+      if (mx <= 0) return env;
+      return env.map((v) => (v / mx).clamp(0.0, 1.0)).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // Duration (ms) of a PCM WAV from its header, so the avatar can scale its
+  // viseme timeline to the real TTS audio length (keeps lips aligned to voice).
+  int _wavDurationMs(List<int> b) {
+    try {
+      if (b.length < 44) return 0;
+      int le32(int o) =>
+          b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+      final byteRate = le32(28);
+      final dataSize = le32(40);
+      if (byteRate <= 0 || dataSize <= 0) return 0;
+      return ((dataSize / byteRate) * 1000).round();
+    } catch (_) {
+      return 0;
+    }
   }
 
   Future<void> _preferFemaleVoice() async {
@@ -342,17 +402,23 @@ class _ISState extends State<InterviewSessionScreen> {
         _answerEvaluations.clear();
         _submittedQuestionIds.clear();
         _liveAgentStartedForQuestion = false;
-        _awaitingReadyConfirmation = true;
+        _awaitingReadyConfirmation = _kLiveAgentEnabled;
         _agentQuestionAskedForCurrentQuestion = false;
         _autoAdvancing = false;
       });
-      _prepareLiveAvatarForCurrentQuestion();
-      _autoStartLiveAgentForCurrentQuestion();
     } catch (e) {
       setState(() {
         _extracting = false;
       });
       _showSnack('Could not start interview. Check backend login/session: $e', AppTheme.errorRed);
+      return;
+    }
+    // Avatar voice / lip-sync is best-effort and must NOT surface as a start error.
+    try {
+      _prepareLiveAvatarForCurrentQuestion();
+      _autoStartLiveAgentForCurrentQuestion();
+    } catch (e) {
+      debugPrint('Avatar setup after start failed (interview still OK): $e');
     }
   }
 
@@ -394,6 +460,17 @@ class _ISState extends State<InterviewSessionScreen> {
   void _autoStartLiveAgentForCurrentQuestion() {
     if (_liveAgentStartedForQuestion || _sessionId == null || _questions.isEmpty) return;
     _liveAgentStartedForQuestion = true;
+    if (!_kLiveAgentEnabled) {
+      // Standard flow: the avatar speaks the question (TTS) and the candidate
+      // answers with the record button. No live websocket agent.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _phase != 2) return;
+        final q = _questions[_qIndex];
+        final qText = (q['questionText'] ?? q['question_text'] ?? '').toString();
+        if (qText.isNotEmpty) _speakQuestion(qText);
+      });
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _phase != 2 || _realtimeActive || _realtimeConnecting) return;
       _startRealtimeAgent();
@@ -467,6 +544,18 @@ class _ISState extends State<InterviewSessionScreen> {
           AppTheme.successGreen,
         );
         return;
+      }
+
+      // Re-record guard: if this question already has an answer (draft or
+      // submitted), confirm before overwriting it. Only the last answer is kept.
+      final reQid = _questions.isNotEmpty
+          ? (_questions[_qIndex]['questionId'] ?? _questions[_qIndex]['question_id'] ?? '').toString()
+          : '';
+      // Only warn if there's an ACTUALLY SUBMITTED answer to lose — not a local
+      // draft or a recording that failed to transcribe.
+      if (_submittedQuestionIds.contains(reQid)) {
+        final proceed = await _confirmReRecord();
+        if (!proceed) return;
       }
 
       final hasPermission = await _recorder.hasPermission();
@@ -637,7 +726,7 @@ class _ISState extends State<InterviewSessionScreen> {
     setState(() {
       _avatarTalk = {
         'provider': 'live-realtime',
-        'message': 'Live realtime avatar ready',
+        'message': 'Interviewer ready',
       };
       _avatarVideoReady = false;
       _loadingAvatar = false;
@@ -652,9 +741,17 @@ class _ISState extends State<InterviewSessionScreen> {
       await _questionPlayer.stop();
       await _tts.stop();
       _sendTalkingHeadMessage('stop');
-      if (mounted) setState(() => _speakingQuestion = true);
-      _sendTalkingHeadMessage('speak', text: text);
       final audio = await ApiService().synthesizeQuestionSpeech(text);
+      if (mounted) setState(() => _speakingQuestion = true);
+      // Lip-sync is best-effort and must NEVER stop the audio from playing.
+      try {
+        final durMs = _wavDurationMs(audio);
+        final env = _wavEnvelope(audio);
+        _sendTalkingHeadMessage('speak', text: text, durationMs: durMs, envelope: env, frameMs: 45);
+      } catch (lipErr) {
+        debugPrint('Lip-sync setup failed (continuing with audio): $lipErr');
+        _sendTalkingHeadMessage('speak', text: text);
+      }
       await _questionPlayer.play(BytesSource(Uint8List.fromList(audio)));
     } catch (e) {
       debugPrint('Piper question TTS failed, falling back to browser voice: $e');
@@ -687,6 +784,7 @@ class _ISState extends State<InterviewSessionScreen> {
   }
 
   Future<void> _toggleRealtimeAgent() async {
+    if (!_kLiveAgentEnabled) return;
     if (_realtimeActive || _realtimeConnecting) {
       await _stopRealtimeAgent();
       return;
@@ -695,6 +793,7 @@ class _ISState extends State<InterviewSessionScreen> {
   }
 
   Future<void> _startRealtimeAgent() async {
+    if (!_kLiveAgentEnabled) return;
     if (_sessionId == null || _questions.isEmpty || _recording || _submittingAnswer) return;
     if (!kIsWeb) {
       _showSnack('Live voice agent is available on web for this build.', AppTheme.errorRed);
@@ -1168,15 +1267,43 @@ class _ISState extends State<InterviewSessionScreen> {
     }
   }
 
+  Future<bool> _confirmReRecord() async {
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Record again?'),
+        content: const Text(
+            'You already answered this question. Recording again will erase your '
+            'previous answer for this question and keep only the new one.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryCyan,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    return res == true;
+  }
+
   Future<void> _confirmEndInterview() async {
-    if (_endingConfirmation) return;
     setState(() => _endingConfirmation = true);
-    final shouldEnd = await showDialog<bool>(
+    bool? shouldEnd;
+    try {
+      shouldEnd = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('End interview?'),
-        content: const Text('Are you sure you want to end the interview? Your submitted live answers will be evaluated.'),
+        content: const Text('Are you sure you want to end the interview? Your submitted answers will be evaluated.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1193,13 +1320,20 @@ class _ISState extends State<InterviewSessionScreen> {
           ),
         ],
       ),
-    );
-    if (mounted) setState(() => _endingConfirmation = false);
+      );
+    } finally {
+      if (mounted) setState(() => _endingConfirmation = false);
+    }
     if (shouldEnd == true) {
       try {
         _agentSocket?.send(jsonEncode({'type': 'confirm_end'}));
       } catch (_) {}
-      await _submitCurrentAnswerIfReady();
+      // Submit the current answer best-effort, but ALWAYS complete + evaluate.
+      try {
+        await _submitCurrentAnswerIfReady();
+      } catch (e) {
+        debugPrint('End: submit of current answer failed (continuing to evaluate): $e');
+      }
       if (mounted) await _finishInterview();
     }
   }
@@ -1399,7 +1533,9 @@ class _ISState extends State<InterviewSessionScreen> {
                   ? 'Connecting'
                   : _realtimeActive
                       ? 'Mic live'
-                      : 'Waiting';
+                      : _recording
+                          ? 'Recording...'
+                          : (_answerAudioName != null ? 'Answer ready' : 'Tap mic to answer');
 
       return Container(
         height: stageHeight,
@@ -1490,7 +1626,7 @@ class _ISState extends State<InterviewSessionScreen> {
                 child: _callTile(
                   name: AuthService().fullName ?? 'You',
                   subtitle: answerStatus,
-                  child: _candidateView(compact: true, liveMode: true),
+                  child: _candidateView(compact: true, liveMode: _kLiveAgentEnabled),
                 ),
               ),
             ]),
@@ -1876,29 +2012,55 @@ class _ISState extends State<InterviewSessionScreen> {
                             ? 'Continuous mic live'
                             : _realtimeStatus;
 
+    final recordBtn = _meetingButton(
+      label: _recording ? 'Stop recording' : 'Record answer',
+      icon: _recording ? Icons.stop : Icons.mic,
+      onPressed: _submittingAnswer ? null : _toggleRecording,
+      success: !_recording,
+    );
+    final repeatBtn = _meetingButton(
+      label: 'Repeat',
+      icon: Icons.volume_up,
+      onPressed: (_recording || _speakingQuestion) ? null : _repeatCurrentQuestion,
+      outlined: true,
+    );
+    final endBtn = _meetingButton(
+      label: 'End Interview',
+      icon: Icons.call_end,
+      onPressed: _confirmEndInterview,
+      success: false,
+    );
+    final isLast = _qIndex >= _questions.length - 1;
+    final nextBtn = _meetingButton(
+      label: isLast ? 'Finish interview' : 'Next question',
+      icon: isLast ? Icons.check_circle : Icons.arrow_forward,
+      onPressed: _submittingAnswer ? null : _nextQuestion,
+      success: true,
+    );
+    // Status pill removed: it rendered as an empty box once the live agent was
+    // disabled. The mic tile already shows answer status.
     return compact
         ? Column(children: [
-            _liveStatusPill(statusIcon, statusText),
-            const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: _meetingButton(
-                label: 'End Interview',
-                icon: Icons.call_end,
-                onPressed: _confirmEndInterview,
-                success: false,
-              ),
-            ),
+            Row(children: [
+              Expanded(child: recordBtn),
+              const SizedBox(width: 8),
+              Expanded(child: repeatBtn),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(flex: 2, child: nextBtn),
+              const SizedBox(width: 8),
+              Expanded(child: endBtn),
+            ]),
           ])
         : Row(children: [
-            Expanded(child: _liveStatusPill(statusIcon, statusText)),
-            const SizedBox(width: 14),
-            _meetingButton(
-              label: 'End Interview',
-              icon: Icons.call_end,
-              onPressed: _confirmEndInterview,
-              success: false,
-            ),
+            Expanded(child: recordBtn),
+            const SizedBox(width: 8),
+            Expanded(child: repeatBtn),
+            const SizedBox(width: 8),
+            Expanded(flex: 2, child: nextBtn),
+            const SizedBox(width: 8),
+            Expanded(child: endBtn),
           ]);
   }
 

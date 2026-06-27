@@ -93,7 +93,7 @@
       "imports": {
         "three": "./talkinghead/node_modules/three/build/three.module.js",
         "three/addons/": "./talkinghead/node_modules/three/examples/jsm/",
-        "talkinghead": "./talkinghead/modules/talkinghead.mjs"
+        "talkinghead": "./talkinghead/modules/talkinghead.mjs?v=6"
       }
     }
   </script>
@@ -120,6 +120,27 @@
       "jawOpen", "mouthOpen", "mouthFunnel", "mouthPucker"
     ];
 
+    // Per-viseme intensity and jaw params for natural mouth shapes
+    const visemeConfig = {
+      // Vowels — each gets distinct mouth shape
+      'aa': { value: 0.52, jaw: 0.22, mouth: 0.18 },   // open "ah"
+      'E':  { value: 0.40, jaw: 0.13, mouth: 0.10 },   // spread "eh"
+      'I':  { value: 0.32, jaw: 0.09, mouth: 0.06 },   // narrow "ee"
+      'O':  { value: 0.50, jaw: 0.20, mouth: 0.16 },   // rounded "oh"
+      'U':  { value: 0.45, jaw: 0.12, mouth: 0.14 },   // pursed "oo"
+      // Consonants
+      'PP': { value: 0.85, jaw: 0.02, mouth: 0.01 },   // lips press
+      'FF': { value: 0.80, jaw: 0.04, mouth: 0.02 },   // bite lip
+      'TH': { value: 0.24, jaw: 0.08, mouth: 0.05 },   // tongue tip (reduced)
+      'DD': { value: 0.26, jaw: 0.10, mouth: 0.06 },   // tongue tap (reduced)
+      'kk': { value: 0.38, jaw: 0.10, mouth: 0.06 },   // back tongue
+      'CH': { value: 0.45, jaw: 0.08, mouth: 0.05 },   // "ch/sh"
+      'SS': { value: 0.28, jaw: 0.06, mouth: 0.04 },   // sibilant
+      'nn': { value: 0.22, jaw: 0.06, mouth: 0.04 },   // nasal (reduced tongue)
+      'RR': { value: 0.28, jaw: 0.09, mouth: 0.06 },   // "r" (reduced tongue)
+      'sil':{ value: 0.00, jaw: 0.00, mouth: 0.00 },   // silence
+    };
+
     function showStatus(show) {
       status.classList.toggle("visible", !!show);
     }
@@ -143,22 +164,31 @@
       }
     }
 
-    function wordsFromText(text) {
+    function wordsFromText(text, targetMs) {
       const words = String(text || "")
         .replace(/[^\p{L}\p{N}'-]+/gu, " ")
         .trim()
         .split(/\s+/)
         .filter(Boolean);
       let time = 0;
-      return {
-        words,
-        wtimes: words.map((word) => {
-          const current = time;
-          time += Math.max(260, Math.min(680, 90 + word.length * 54));
-          return current;
-        }),
-        wdurations: words.map((word) => Math.max(240, Math.min(620, 80 + word.length * 48))),
-      };
+      const wtimes = [];
+      const wdurations = [];
+      for (const word of words) {
+        wtimes.push(time);
+        wdurations.push(Math.max(240, Math.min(620, 80 + word.length * 48)));
+        time += Math.max(260, Math.min(680, 90 + word.length * 54));
+      }
+      // Scale the heuristic timeline to the ACTUAL TTS audio duration so the
+      // mouth stays aligned with the voice for the whole utterance.
+      const estimated = time;
+      if (targetMs && targetMs > 200 && estimated > 0) {
+        const f = targetMs / estimated;
+        for (let i = 0; i < wtimes.length; i++) {
+          wtimes[i] *= f;
+          wdurations[i] *= f;
+        }
+      }
+      return { words, wtimes, wdurations };
     }
 
     function clearMouth() {
@@ -169,28 +199,42 @@
       visemeNames.forEach((name) => head.setFixedValue(name, null, 70));
     }
 
-    function scheduleViseme(name, value, at, hold) {
+    function scheduleViseme(name, value, at, hold, visemeKey) {
+      const cfg = visemeConfig[visemeKey] || { value: 0.40, jaw: 0.12, mouth: 0.08 };
+      const intensity = cfg.value;
+      const jawVal = cfg.jaw;
+      const mouthVal = cfg.mouth;
+
+      // Onset: ease into the shape
       visemeTimers.push(window.setTimeout(() => {
         if (!head) return;
-        visemeNames.forEach((target) => head.setFixedValue(target, null, 35));
-        head.setFixedValue(name, value, 45);
-        if (name !== "viseme_PP" && name !== "viseme_FF") {
-          head.setFixedValue("jawOpen", Math.min(0.5, value * 0.55), 45);
-          head.setFixedValue("mouthOpen", Math.min(0.42, value * 0.45), 45);
+        // Clear previous visemes with smooth fade
+        visemeNames.forEach((target) => head.setFixedValue(target, null, 80));
+        // Set this viseme with natural transition
+        head.setFixedValue(name, intensity, 90);
+        head.setFixedValue("jawOpen", jawVal, 90);
+        head.setFixedValue("mouthOpen", mouthVal, 90);
+        // Add subtle mouthFunnel for rounded vowels
+        if (visemeKey === 'O' || visemeKey === 'U') {
+          head.setFixedValue("mouthFunnel", 0.15, 90);
+          head.setFixedValue("mouthPucker", visemeKey === 'U' ? 0.20 : 0.10, 90);
         }
       }, Math.max(0, at)));
 
+      // Offset: smooth release
       visemeTimers.push(window.setTimeout(() => {
         if (!head) return;
-        head.setFixedValue(name, null, 65);
-        head.setFixedValue("jawOpen", null, 65);
-        head.setFixedValue("mouthOpen", null, 65);
+        head.setFixedValue(name, null, 120);
+        head.setFixedValue("jawOpen", null, 120);
+        head.setFixedValue("mouthOpen", null, 120);
+        head.setFixedValue("mouthFunnel", null, 120);
+        head.setFixedValue("mouthPucker", null, 120);
       }, Math.max(0, at + hold)));
     }
 
-    function animateVisemesFromText(text) {
+    function animateVisemesFromText(text, targetMs) {
       clearMouth();
-      const timing = wordsFromText(text);
+      const timing = wordsFromText(text, targetMs);
       let lastTime = 0;
 
       timing.words.forEach((word, index) => {
@@ -200,7 +244,7 @@
         const wordDuration = timing.wdurations[index];
 
         if (!sequence?.visemes?.length) {
-          scheduleViseme("jawOpen", 0.28, wordStart, Math.max(120, wordDuration * 0.55));
+          scheduleViseme("jawOpen", 0.12, wordStart, Math.max(120, wordDuration * 0.55), 'aa');
           lastTime = Math.max(lastTime, wordStart + wordDuration);
           return;
         }
@@ -214,8 +258,8 @@
           const name = `viseme_${viseme}`;
           const at = wordStart + (sequence.times[visemeIndex] * scale);
           const hold = Math.max(95, sequence.durations[visemeIndex] * scale);
-          const value = (viseme === "PP" || viseme === "FF") ? 0.95 : 0.72;
-          scheduleViseme(name, value, at, hold);
+          const cfg = visemeConfig[viseme] || { value: 0.40 };
+          scheduleViseme(name, cfg.value, at, hold, viseme);
           lastTime = Math.max(lastTime, at + hold);
         });
       });
@@ -238,10 +282,10 @@
         cameraZoomEnable: false,
         modelFPS: 30,
         modelPixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
-        avatarIdleEyeContact: 0.55,
-        avatarIdleHeadMove: 0.08,
-        avatarSpeakingEyeContact: 0.92,
-        avatarSpeakingHeadMove: 0.10
+        avatarIdleEyeContact: 0.97,
+        avatarIdleHeadMove: 0.0,
+        avatarSpeakingEyeContact: 0.99,
+        avatarSpeakingHeadMove: 0.0
       });
 
       try {
@@ -250,11 +294,11 @@
           body: "M",
           avatarMood: "neutral",
           lipsyncLang: "en",
-          avatarSpeakingEyeContact: 0.85,
-          avatarIdleHeadMove: 0.08,
-          avatarSpeakingHeadMove: 0.10,
+          avatarSpeakingEyeContact: 0.99,
+          avatarIdleHeadMove: 0.0,
+          avatarSpeakingHeadMove: 0.0,
           baseline: {
-            headRotateX: -0.04,
+            headRotateX: -0.02,
             eyeBlinkLeft: 0.1,
             eyeBlinkRight: 0.1
           }
@@ -272,13 +316,80 @@
       }
     }
 
-    async function speak(text) {
+    async function speak(text, durationMs, envelope, frameMs) {
       if (!ready || !head || !text) return;
       try {
         head.stopSpeaking?.();
       } catch (_) {}
       setStateLabel("speaking");
-      animateVisemesFromText(text);
+      if (Array.isArray(envelope) && envelope.length > 1) {
+        animateFromEnvelope(text, envelope, frameMs || 45);
+      } else {
+        animateVisemesFromText(text, durationMs);
+      }
+    }
+
+    // Audio-driven lip-sync: jaw/mouth opening follows the REAL audio amplitude
+    // envelope (one value per frameMs), so open/close lines up with the voice
+    // sample-accurately; vowel SHAPES are layered from the text on top.
+    function animateFromEnvelope(text, envelope, frameMs) {
+      clearMouth();
+      const n = envelope.length;
+      const total = n * frameMs;
+      // light smoothing
+      const env = envelope.map((v, i) => {
+        const a = envelope[Math.max(0, i - 1)];
+        const c = envelope[Math.min(n - 1, i + 1)];
+        return (a + 2 * v + c) / 4;
+      });
+      let mx = 0.0001;
+      for (const v of env) if (v > mx) mx = v;
+      // drive jawOpen + mouthOpen from amplitude, frame by frame
+      for (let i = 0; i < n; i++) {
+        const open = Math.min(1, env[i] / mx);
+        const at = i * frameMs;
+        visemeTimers.push(window.setTimeout(() => {
+          if (!head) return;
+          const speaking = open > 0.07;
+          const jawVal = speaking ? 0.04 + open * 0.18 : 0.0;
+          head.setFixedValue("jawOpen", jawVal, Math.max(30, frameMs));
+          head.setFixedValue("mouthOpen", speaking ? open * 0.13 : 0.0, Math.max(30, frameMs));
+        }, at));
+      }
+      // overlay vowel/consonant SHAPES from the text (no jaw/mouth here — envelope owns those)
+      const timing = wordsFromText(text, total);
+      timing.words.forEach((word, index) => {
+        let seq;
+        try { seq = head.lipsyncWordsToVisemes(head.lipsyncPreProcessText(word, "en"), "en"); }
+        catch (_) { seq = null; }
+        if (!seq?.visemes?.length) return;
+        const wStart = timing.wtimes[index];
+        const wDur = timing.wdurations[index];
+        const seqEnd = seq.times[seq.times.length - 1] + seq.durations[seq.durations.length - 1];
+        const scale = seqEnd > 0 ? wDur / seqEnd : 1;
+        seq.visemes.forEach((vis, vi) => {
+          if (vis === "sil") return;
+          const name = `viseme_${vis}`;
+          const at = wStart + seq.times[vi] * scale;
+          const hold = Math.max(70, seq.durations[vi] * scale);
+          const cfg = visemeConfig[vis] || { value: 0.40 };
+          visemeTimers.push(window.setTimeout(() => {
+            if (!head) return;
+            head.setFixedValue(name, cfg.value, 70);
+            if (vis === "O" || vis === "U") {
+              head.setFixedValue("mouthFunnel", 0.15, 70);
+              head.setFixedValue("mouthPucker", vis === "U" ? 0.20 : 0.10, 70);
+            }
+          }, Math.max(0, at)));
+          visemeTimers.push(window.setTimeout(() => {
+            if (!head) return;
+            head.setFixedValue(name, null, 90);
+            head.setFixedValue("mouthFunnel", null, 90);
+            head.setFixedValue("mouthPucker", null, 90);
+          }, Math.max(0, at + hold)));
+        });
+      });
+      window.__speakingTimer = window.setTimeout(() => { clearMouth(); showStatus(false); }, total + 250);
     }
 
     function stop() {
@@ -302,7 +413,7 @@
     window.addEventListener("message", (event) => {
       const message = event.data || {};
       if (message.source !== "interviewmate-flutter") return;
-      if (message.type === "speak") speak(message.text);
+      if (message.type === "speak") speak(message.text, message.durationMs, message.envelope, message.frameMs);
       if (message.type === "stop") stop();
       if (message.type === "listen") listen();
       if (message.type === "think") think();

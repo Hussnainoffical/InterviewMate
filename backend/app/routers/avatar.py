@@ -1,9 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.services.avatar import create_avatar_talk, get_avatar_talk
 from app.services.tts import synthesize_question
+from starlette.concurrency import run_in_threadpool
 
 
 router = APIRouter()
@@ -38,17 +39,27 @@ async def avatar_talk_status(talk_id: str):
         raise HTTPException(status_code=502, detail=f"D-ID status request failed: {exc}")
 
 
+def _wav_response(wav_path) -> Response:
+    # Return the WAV bytes as a plain Response (CORS-friendly, unlike FileResponse).
+    data = wav_path.read_bytes()
+    return Response(
+        content=data,
+        media_type="audio/wav",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'inline; filename="{wav_path.name}"',
+        },
+    )
+
+
 @router.post("/speech")
 async def avatar_speech(body: SpeechRequest):
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
     try:
-        wav_path = synthesize_question(body.text)
-        return FileResponse(
-            wav_path,
-            media_type="audio/wav",
-            filename=wav_path.name,
-        )
+        wav_path = await run_in_threadpool(synthesize_question, body.text)
+        return await run_in_threadpool(_wav_response, wav_path)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Piper TTS failed: {exc}")
 
@@ -56,11 +67,7 @@ async def avatar_speech(body: SpeechRequest):
 @router.get("/speech")
 async def avatar_speech_url(text: str = Query(..., min_length=1)):
     try:
-        wav_path = synthesize_question(text)
-        return FileResponse(
-            wav_path,
-            media_type="audio/wav",
-            filename=wav_path.name,
-        )
+        wav_path = await run_in_threadpool(synthesize_question, text)
+        return await run_in_threadpool(_wav_response, wav_path)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Piper TTS failed: {exc}")

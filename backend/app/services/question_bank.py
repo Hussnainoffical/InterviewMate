@@ -34,6 +34,7 @@ def search_questions(
     exclude_texts = {q.lower() for q in (exclude_texts or set())}
     query = _build_query(skills, candidate_profile)
     query_terms = _tokenize(query)
+    interview_mode = str(candidate_profile.get("interview_mode", "mixed")).lower()
 
     scored = []
     query_context = _query_context(skills, candidate_profile)
@@ -44,22 +45,96 @@ def search_questions(
         parsed = (_parsed_records or [])[idx] if idx < len(_parsed_records or []) else {}
         score = _score_record(query_terms, rec, parsed, query_context)
         if score > 0:
+            score = _apply_mode_boost(score, parsed, interview_mode)
             scored.append((score, idx, rec))
 
     scored.sort(key=lambda item: (-item[0], item[1]))
+
+    # Slot-based selection: ensure mode-appropriate mix
     selected = []
     seen = set(exclude_texts)
-    for _, idx, rec in scored:
-        question = rec.get("target", "").strip()
-        if not question or question.lower() in seen:
-            continue
-        seen.add(question.lower())
-        parsed = (_parsed_records or [])[idx] if idx < len(_parsed_records or []) else {}
-        selected.append(_to_question(question, skills, "dataset_bank", parsed))
-        if len(selected) >= count:
-            break
+
+    if interview_mode in ("technical", "behavioral"):
+        # For focused modes, pick matching-type first, then fill remainder
+        preferred_types = _MODE_TYPE_PREFS.get(interview_mode, set())
+        preferred = []
+        others = []
+        for sc, idx, rec in scored:
+            question = rec.get("target", "").strip()
+            if not question or question.lower() in seen:
+                continue
+            parsed = (_parsed_records or [])[idx] if idx < len(_parsed_records or []) else {}
+            rec_type = str(parsed.get("type", "")).strip()
+            if rec_type in preferred_types:
+                preferred.append((question, parsed))
+            else:
+                others.append((question, parsed))
+
+        # Take ~70% from preferred type, rest from others
+        preferred_count = max(count * 7 // 10, min(count, len(preferred)))
+        for question, parsed in preferred[:preferred_count]:
+            seen.add(question.lower())
+            selected.append(_to_question(question, skills, "dataset_bank", parsed))
+        for question, parsed in others:
+            if len(selected) >= count:
+                break
+            if question.lower() not in seen:
+                seen.add(question.lower())
+                selected.append(_to_question(question, skills, "dataset_bank", parsed))
+    else:
+        # Mixed / senior_round: balanced selection
+        for _, idx, rec in scored:
+            question = rec.get("target", "").strip()
+            if not question or question.lower() in seen:
+                continue
+            seen.add(question.lower())
+            parsed = (_parsed_records or [])[idx] if idx < len(_parsed_records or []) else {}
+            selected.append(_to_question(question, skills, "dataset_bank", parsed))
+            if len(selected) >= count:
+                break
 
     return selected
+
+
+# Map interview modes to preferred dataset Type/Section values
+_MODE_TYPE_PREFS = {
+    "technical": {"Technical", "Debugging", "System Design", "Problem-Solving"},
+    "behavioral": {"Behavioral", "Situational", "Leadership"},
+    "mixed": set(),
+    "senior_round": {"Leadership", "System Design", "Situational"},
+}
+_MODE_SECTION_PREFS = {
+    "technical": {"Primary Skill", "Field Knowledge"},
+    "behavioral": {"Behavioral", "Work Experience"},
+    "mixed": set(),
+    "senior_round": {"Behavioral", "Work Experience", "Field Knowledge"},
+}
+
+
+def _apply_mode_boost(score: float, parsed: dict, mode: str) -> float:
+    """Boost or penalize score based on interview mode vs record type/section."""
+    if mode == "mixed":
+        return score
+
+    rec_type = str(parsed.get("type", "")).strip()
+    rec_section = str(parsed.get("section", "")).strip()
+
+    preferred_types = _MODE_TYPE_PREFS.get(mode, set())
+    preferred_sections = _MODE_SECTION_PREFS.get(mode, set())
+
+    if preferred_types:
+        if rec_type in preferred_types:
+            score *= 1.4
+        elif rec_type and rec_type not in preferred_types:
+            score *= 0.6
+
+    if preferred_sections:
+        if rec_section in preferred_sections:
+            score *= 1.2
+        elif rec_section and rec_section not in preferred_sections:
+            score *= 0.85
+
+    return score
 
 
 def dataset_size() -> int:
@@ -228,10 +303,18 @@ def _to_question(text: str, skills: list[str], source: str, parsed: dict | None 
         skill_tag = str(parsed["skills"][0])
     elif skill_tag == "general" and skills:
         skill_tag = skills[0]
+    rec_type = str(parsed.get("type", "")).lower()
+    if rec_type in ("behavioral", "situational", "leadership"):
+        category = "behavioral"
+    elif rec_type in ("problem-solving", "debugging"):
+        category = "problem_solving"
+    else:
+        category = "technical"
+
     return {
         "questionId": str(uuid.uuid4()),
         "questionText": text,
         "skillTag": skill_tag,
-        "category": "technical",
+        "category": category,
         "source": source,
     }
